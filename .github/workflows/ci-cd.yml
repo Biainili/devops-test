@@ -12,7 +12,6 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_REPO: ${{ github.repository_owner }}/devops-test
 
 jobs:
   build:
@@ -35,27 +34,37 @@ jobs:
       image: ${{ steps.out.outputs.image }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Compute lowercase repo path
+        id: vars
+        run: |
+          REPO_LC="$(echo "${{ github.repository_owner }}/devops-test" | tr '[:upper:]' '[:lower:]')"
+          echo "repo=${REPO_LC}" >> $GITHUB_OUTPUT
+
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build & push (sha tag)
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}:sha-${{ github.sha }}
+          tags: ${{ env.REGISTRY }}/${{ steps.vars.outputs.repo }}:sha-${{ github.sha }}
+
       - name: Push latest on main
         if: github.ref == 'refs/heads/main'
         run: |
-          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}:sha-${{ github.sha }}
-          docker tag  ${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}:sha-${{ github.sha }} ${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}:latest
-          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}:latest
+          docker pull ${{ env.REGISTRY }}/${{ steps.vars.outputs.repo }}:sha-${{ github.sha }}
+          docker tag  ${{ env.REGISTRY }}/${{ steps.vars.outputs.repo }}:sha-${{ github.sha }} ${{ env.REGISTRY }}/${{ steps.vars.outputs.repo }}:latest
+          docker push ${{ env.REGISTRY }}/${{ steps.vars.outputs.repo }}:latest
+
       - id: out
-        run: echo "image=${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}:sha-${{ github.sha }}" >> $GITHUB_OUTPUT
+        run: echo "image=${{ env.REGISTRY }}/${{ steps.vars.outputs.repo }}:sha-${{ github.sha }}" >> $GITHUB_OUTPUT
 
   deploy_smoke:
     name: Deploy to kind & Smoke test
