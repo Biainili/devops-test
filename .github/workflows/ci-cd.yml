@@ -95,13 +95,24 @@ jobs:
           echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
           docker pull "$IMG"
           kind load docker-image "$IMG" --name devops
-      - name: Apply K8s manifests
+      - name: Apply K8s manifests (except Ingress)
         run: |
           kubectl -n demo apply -f k8s/redis-deployment.yaml
           kubectl -n demo apply -f k8s/redis-service.yaml
           kubectl -n demo apply -f k8s/app-configmap.yaml
           kubectl -n demo apply -f k8s/app-deployment.yaml
           kubectl -n demo apply -f k8s/app-service.yaml
+      - name: Wait ingress admission webhook
+        run: |
+          kubectl -n ingress-nginx wait --for=condition=complete job/ingress-nginx-admission-create --timeout=180s || true
+          kubectl -n ingress-nginx wait --for=condition=complete job/ingress-nginx-admission-patch --timeout=180s || true
+          for i in $(seq 1 60); do
+            EP="$(kubectl -n ingress-nginx get ep ingress-nginx-controller-admission -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null || true)"
+            if [ -n "$EP" ]; then echo "Admission endpoints ready: $EP"; break; fi
+            sleep 2
+          done
+      - name: Apply app Ingress
+        run: |
           kubectl -n demo apply -f k8s/app-ingress.yaml
       - name: Set fresh image & wait rollouts
         run: |
