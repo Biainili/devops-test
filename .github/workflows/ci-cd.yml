@@ -1,0 +1,126 @@
+name: CI/CD NestJS / Redis / K8s
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_REPO: ${{ github.repository_owner }}/devops-test
+
+jobs:
+  build:
+    name: Build (Node)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+  docker:
+    name: Docker build & push to GHCR
+    needs: build
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.out.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build & push (sha tag)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}:sha-${{ github.sha }}
+      - name: Push latest on main
+        if: github.ref == 'refs/heads/main'
+        run: |
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}:sha-${{ github.sha }}
+          docker tag  ${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}:sha-${{ github.sha }} ${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}:latest
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}:latest
+      - id: out
+        run: echo "image=${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}:sha-${{ github.sha }}" >> $GITHUB_OUTPUT
+
+  deploy_smoke:
+    name: Deploy to kind & Smoke test
+    needs: docker
+    runs-on: ubuntu-latest
+    env:
+      IMG: ${{ needs.docker.outputs.image }}
+      REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kind
+        run: |
+          curl -Lo kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
+          chmod +x kind && sudo mv kind /usr/local/bin/kind
+
+      - name: Create kind (use repo config)
+        run: |
+          kind create cluster --config k8s/infra/kind-config.yaml
+          kubectl get nodes -o wide
+
+      - name: Install ingress-nginx for kind & wait
+        run: |
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.10.1/deploy/static/provider/kind/deploy.yaml
+          kubectl label node devops-control-plane ingress-ready=true --overwrite
+          kubectl wait -n ingress-nginx --for=condition=Ready pod -l app.kubernetes.io/component=controller --timeout=600s
+
+      - name: Create namespace & Secret
+        run: |
+          kubectl create namespace demo
+          PW="${REDIS_PASSWORD:-DevOps123456}"
+          kubectl -n demo create secret generic redis-auth --from-literal=password="$PW"
+
+      - name: Pull image from GHCR & load into kind
+        run: |
+          echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker pull "$IMG"
+          kind load docker-image "$IMG" --name devops
+
+      - name: Apply K8s manifests
+        run: |
+          kubectl -n demo apply -f k8s/redis-deployment.yaml
+          kubectl -n demo apply -f k8s/redis-service.yaml
+          kubectl -n demo apply -f k8s/app-configmap.yaml
+          kubectl -n demo apply -f k8s/app-deployment.yaml
+          kubectl -n demo apply -f k8s/app-service.yaml
+          kubectl -n demo apply -f k8s/app-ingress.yaml
+
+      - name: Set fresh image & wait rollouts
+        run: |
+          kubectl -n demo set image deploy/app app="$IMG"
+          kubectl -n demo rollout status deploy/redis --timeout=180s
+          kubectl -n demo rollout status deploy/app   --timeout=300s
+
+      - name: Smoke test: /redis via Ingress
+        run: |
+          sleep 5
+          curl -fsS http://app.127.0.0.1.nip.io:8080/redis | tee /tmp/smoke.json
+          grep -q '"status":true' /tmp/smoke.json
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          kubectl -n demo get all
+          kubectl -n demo describe deploy app || true
+          kubectl -n demo describe deploy redis || true
+          kubectl -n demo logs deploy/app --tail=200 || true
+          kubectl -n demo logs deploy/redis --tail=200 || true
