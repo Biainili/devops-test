@@ -110,7 +110,7 @@ jobs:
           kubectl -n demo rollout status deploy/redis --timeout=180s
           kubectl -n demo rollout status deploy/app   --timeout=300s
 
-      - name: Smoke test: /redis via Ingress
+      - name: "Smoke test: /redis via Ingress"
         run: |
           sleep 5
           curl -fsS http://app.127.0.0.1.nip.io:8080/redis | tee /tmp/smoke.json
