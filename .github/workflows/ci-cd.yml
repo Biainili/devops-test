@@ -83,6 +83,14 @@ jobs:
           kubectl label node devops-control-plane ingress-ready=true --overwrite
           kubectl -n ingress-nginx wait --for=condition=Available deployment/ingress-nginx-controller --timeout=600s
           kubectl -n ingress-nginx get pods -o wide
+      - name: Install metrics-server & wait
+        run: |
+          kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.7.2/components.yaml
+          kubectl -n kube-system patch deploy metrics-server --type='json' -p='[
+            {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"},
+            {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname"}
+          ]'
+          kubectl -n kube-system rollout status deploy/metrics-server --timeout=180s
       - name: Create namespace & Secret
         env:
           PW: ${{ secrets.REDIS_PASSWORD }}
@@ -102,6 +110,10 @@ jobs:
           kubectl -n demo apply -f k8s/app-configmap.yaml
           kubectl -n demo apply -f k8s/app-deployment.yaml
           kubectl -n demo apply -f k8s/app-service.yaml
+      - name: Apply HPA
+        run: |
+          kubectl -n demo apply -f k8s/app-hpa.yaml
+          kubectl -n demo get hpa app
       - name: Wait ingress admission webhook
         run: |
           kubectl -n ingress-nginx wait --for=condition=complete job/ingress-nginx-admission-create --timeout=180s || true
