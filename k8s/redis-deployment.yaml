@@ -22,6 +22,7 @@ spec:
       containers:
         - name: redis
           image: redis:7-alpine
+          imagePullPolicy: IfNotPresent
           args: ["redis-server","--appendonly","yes","--requirepass","$(REDIS_PASSWORD)"]
           env:
             - name: REDIS_PASSWORD
