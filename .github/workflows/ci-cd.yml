@@ -137,7 +137,7 @@ jobs:
           kubectl -n demo apply -f k8s/app-hpa.yaml
           kubectl -n demo get hpa app
 
-      - name: Smoke test: /redis via Ingress
+      - name: "Smoke test: /redis via Ingress"
         run: |
           sleep 5
           curl -fsS http://app.127.0.0.1.nip.io:8080/redis | tee /tmp/smoke.json
