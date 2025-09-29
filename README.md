@@ -40,7 +40,7 @@ probes, resources, non-root"]
   - **Redis**: `Deployment` / `Service`; пароль — в `Secret`.
   - **HPA** (`autoscaling/v2`): CPU **50%**, Memory **70%**, **1..3** реплик.
   - **metrics-server** для метрик.
-  - *(Бонус)* **NetworkPolicy** — ограничение доступа к Redis.
+  - **NetworkPolicy** — ограничение доступа к Redis.
 - **Безопасность**: `runAsNonRoot`, `allowPrivilegeEscalation: false`, `capabilities: drop ["ALL"]`.
 
 ---
@@ -63,7 +63,7 @@ kubectl -n demo create secret generic redis-auth --from-literal=password="DevOps
 
 kubectl -n demo apply -f k8s/
 
-# smoke-тест эндпоинта (kind по конфигу мапит 80->8080):
+# smoke-тест эндпоинта (kind по конфигу 80->8080):
 curl -fsS http://app.127.0.0.1.nip.io:8080/redis
 ```
 
@@ -119,29 +119,4 @@ src/…
 
 ---
 
-## Полезные команды
 
-```
-# посмотреть ресурсы
-kubectl -n demo get all
-
-# описать под/службу/ингресс
-kubectl -n demo describe deploy/app
-kubectl -n demo describe svc/app
-kubectl -n demo describe ing/app
-
-# логи приложения
-kubectl -n demo logs deploy/app -f --tail=200
-
-# форс‑перекатка
-kubectl -n demo rollout restart deploy/app
-```
-
----
-
-## Примечания
-
-- В `k8s/app-deployment.yaml` контейнер запускается **без привилегий** (drop ALL caps, non‑root).
-- **HPA** использует CPU/Memory цели, поэтому **metrics-server** обязателен.
-- Имя ноды `devops-control-plane` соответствует названию кластера в `k8s/infra/kind-config.yaml`. Если у вас другое имя — поправьте команду label.
-- Образ по умолчанию: `ghcr.io/biainili/devops-test:latest`.
