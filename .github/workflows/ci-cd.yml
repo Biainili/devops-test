@@ -69,20 +69,23 @@ jobs:
       IMG: ${{ needs.docker.outputs.image }}
     steps:
       - uses: actions/checkout@v4
+
       - name: Install kind
         run: |
           curl -Lo kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
           chmod +x kind && sudo mv kind /usr/local/bin/kind
+
       - name: Create kind (use repo config)
         run: |
           kind create cluster --config k8s/infra/kind-config.yaml
           kubectl get nodes -o wide
-      - name: Install ingress-nginx for kind & wait
+
+      - name: Install ingress-nginx & wait
         run: |
           kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.10.1/deploy/static/provider/kind/deploy.yaml
           kubectl label node devops-control-plane ingress-ready=true --overwrite
           kubectl -n ingress-nginx wait --for=condition=Available deployment/ingress-nginx-controller --timeout=600s
-          kubectl -n ingress-nginx get pods -o wide
+
       - name: Install metrics-server & wait
         run: |
           kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.7.2/components.yaml
@@ -91,6 +94,7 @@ jobs:
             {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname"}
           ]'
           kubectl -n kube-system rollout status deploy/metrics-server --timeout=180s
+
       - name: Create namespace & Secret
         env:
           PW: ${{ secrets.REDIS_PASSWORD }}
@@ -98,11 +102,18 @@ jobs:
           kubectl create namespace demo
           if [ -z "$PW" ]; then echo "REDIS_PASSWORD secret is required"; exit 1; fi
           kubectl -n demo create secret generic redis-auth --from-literal=password="$PW"
-      - name: Pull image from GHCR & load into kind
+
+      - name: Preload Redis image into kind
+        run: |
+          docker pull redis:7-alpine
+          kind load docker-image redis:7-alpine --name devops
+
+      - name: Pull app image & load into kind
         run: |
           echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
           docker pull "$IMG"
           kind load docker-image "$IMG" --name devops
+
       - name: Apply K8s manifests (except Ingress)
         run: |
           kubectl -n demo apply -f k8s/redis-deployment.yaml
@@ -110,32 +121,28 @@ jobs:
           kubectl -n demo apply -f k8s/app-configmap.yaml
           kubectl -n demo apply -f k8s/app-deployment.yaml
           kubectl -n demo apply -f k8s/app-service.yaml
+
+      - name: Apply app Ingress
+        run: kubectl -n demo apply -f k8s/app-ingress.yaml
+
+      - name: Set fresh image & wait rollouts
+        run: |
+          kubectl -n demo rollout status deploy/redis --timeout=300s
+          kubectl -n demo wait --for=condition=Ready pod -l app=redis --timeout=180s
+          kubectl -n demo set image deploy/app app="$IMG"
+          kubectl -n demo rollout status deploy/app --timeout=300s
+
       - name: Apply HPA
         run: |
           kubectl -n demo apply -f k8s/app-hpa.yaml
           kubectl -n demo get hpa app
-      - name: Wait ingress admission webhook
-        run: |
-          kubectl -n ingress-nginx wait --for=condition=complete job/ingress-nginx-admission-create --timeout=180s || true
-          kubectl -n ingress-nginx wait --for=condition=complete job/ingress-nginx-admission-patch --timeout=180s || true
-          for i in $(seq 1 60); do
-            EP="$(kubectl -n ingress-nginx get ep ingress-nginx-controller-admission -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null || true)"
-            if [ -n "$EP" ]; then echo "Admission endpoints ready: $EP"; break; fi
-            sleep 2
-          done
-      - name: Apply app Ingress
-        run: |
-          kubectl -n demo apply -f k8s/app-ingress.yaml
-      - name: Set fresh image & wait rollouts
-        run: |
-          kubectl -n demo set image deploy/app app="$IMG"
-          kubectl -n demo rollout status deploy/redis --timeout=180s
-          kubectl -n demo rollout status deploy/app --timeout=300s
-      - name: "Smoke test: /redis via Ingress"
+
+      - name: Smoke test: /redis via Ingress
         run: |
           sleep 5
           curl -fsS http://app.127.0.0.1.nip.io:8080/redis | tee /tmp/smoke.json
           grep -q '"status":true' /tmp/smoke.json
+
       - name: Dump logs on failure
         if: failure()
         run: |
